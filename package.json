@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "docs:dev": "vuepress dev docs"
+    "docs:dev": "vuepress dev docs",
+    "lint": "prettier --write \"./docs/**/*.{js,md}\""
   },
   "keywords": [
     "flux",
