@@ -10,9 +10,9 @@ module.exports = {
       { text: 'Redux', link: '/redux/' }
     ],
     sidebar: {
-      '/flux/': ['', 'dispatcher']
-    },
-    lastUpdated: 'Last Updated'
+      '/flux/': ['', 'dispatcher', 'action', 'store', 'view'],
+      '/redux/': ['']
+    }
   },
   markdown: {
     lineNumbers: true
