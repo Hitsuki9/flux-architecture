@@ -1,7 +1,7 @@
 module.exports = {
   title: 'Flux 架构',
   base: '/flux-architecture/',
-  configureWebpack: {},
+  // configureWebpack: {},
   themeConfig: {
     sidebarDepth: 2,
     displayAllHeaders: true,
@@ -11,7 +11,7 @@ module.exports = {
     ],
     sidebar: {
       '/flux/': ['', 'dispatcher', 'action', 'store', 'view'],
-      '/redux/': ['']
+      '/redux/': ['', 'source-code']
     }
   },
   markdown: {

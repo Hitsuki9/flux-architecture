@@ -1,6 +1,6 @@
 # Store
 
-stores 包含应用的状态和逻辑，不同的 store 管理应用中不同部分的状态。
+stores 包含应用的状态和逻辑，不同的 store 管理应用中不同部分的状态。它们的作用与传统的 MVC 中的 model 有些类似。
 
 ```js
 class TodoStore {

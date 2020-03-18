@@ -1,8 +1,10 @@
 # View
 
-view 就是 React 组件，从 Store 获取状态（数据）并绑定 change 事件。
+views 就是 React 组件，从 stores 获取状态（数据）并绑定 change 事件。
 
 ## 容器组件
+
+容器组件又称作控制器视图（controller-views）。
 
 ```js
 function getStores() {
