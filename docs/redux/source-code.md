@@ -94,8 +94,8 @@ const randomString = () =>
 
 const ActionTypes = {
   INIT: `@@redux/INIT${randomString()}`,
-  REPLACE: `@@redux/REPLACE${randomString()}`
-  // ...
+  REPLACE: `@@redux/REPLACE${randomString()}`,
+  PROBE_UNKNOWN_ACTION: () => `@@redux/PROBE_UNKNOWN_ACTION${randomString()}`
 };
 ```
 
@@ -236,18 +236,13 @@ function ensureCanMutateNextListeners() {
 
 ### observable
 
+一个最简的 observable 订阅方法。
+
 ```js
 function observable() {
   const outerSubscribe = subscribe;
   return {
-    /**
-     * The minimal observable subscription method.
-     * @param {Object} observer Any object that can be used as an observer.
-     * The observer object should have a `next` method.
-     * @returns {subscription} An object with an `unsubscribe` method that can
-     * be used to unsubscribe the observable from the store, and prevent further
-     * emission of values from the observable.
-     */
+    // observer 对象应该要有 next 方法
     subscribe(observer) {
       if (typeof observer !== 'object' || observer === null) {
         throw new TypeError('Expected the observer to be an object.');
@@ -258,6 +253,7 @@ function observable() {
         }
       }
       observeState();
+      // 返回取消订阅的方法
       const unsubscribe = outerSubscribe(observeState);
       return { unsubscribe };
     },
@@ -271,6 +267,8 @@ function observable() {
 最后，返回 store。
 
 ```js
+import $$observable from 'symbol-observable';
+
 return {
   dispatch,
   subscribe,
@@ -279,3 +277,184 @@ return {
   [$$observable]: observable
 };
 ```
+
+## combineReducers
+
+- `reducers: Object` 一个包含需要合并成一个 reducer 的不同 reducers 的对象。一个简便的方法是通过 ES6 的 `import * as reducers` 来获得。
+
+- `returns: Function` 合并的 reducer 函数，该函数调用参数内的每个 reducer，并构建与参数对象具有**相同形状**的状态树。
+
+```js
+function combineReducers(reducers) {
+  // ...
+}
+```
+
+获取 reducers 的键值列表，并构建一个形状相同的对象。
+
+```js
+const reducerKeys = Object.keys(reducers);
+const finalReducers = {};
+for (let i = 0; i < reducerKeys.length; i++) {
+  const key = reducerKeys[i];
+  // 过滤掉非 function 的 reducers
+  if (process.env.NODE_ENV !== 'production') {
+    if (typeof reducers[key] === 'undefined') {
+      warning(`No reducer provided for key "${key}"`);
+    }
+  }
+  if (typeof reducers[key] === 'function') {
+    finalReducers[key] = reducers[key];
+  }
+  // 一个缓存，用于在非生产环境下检测 state 的形状使用，可防止重复发出警告
+  let unexpectedKeyCache;
+  if (process.env.NODE_ENV !== 'production') {
+    unexpectedKeyCache = {};
+  }
+  let shapeAssertionError;
+  try {
+    assertReducerShape(finalReducers);
+  } catch (e) {
+    shapeAssertionError = e;
+  }
+}
+```
+
+### assertReducerShape
+
+检测 reducers 是否都符和要求
+
+```js
+function assertReducerShape(reducers) {
+  Object.keys(reducers).forEach((key) => {
+    // 获取每一个 reducer 对应的初始 state
+    const reducer = reducers[key];
+    // 这里无法使用 createStore 的 preloadedState 参数
+    // 因此 reducer 的 state 参数必须要有默认值
+    const initialState = reducer(undefined, { type: ActionTypes.INIT });
+    // reducer 必须返回 null 或初始状态，不能是 undefined
+    if (typeof initialState === 'undefined') {
+      throw new Error(
+        `Reducer "${key}" returned undefined during initialization. ` +
+          `If the state passed to the reducer is undefined, you must ` +
+          `explicitly return the initial state. The initial state may ` +
+          `not be undefined. If you don't want to set a value for this reducer, ` +
+          `you can use null instead of undefined.`
+      );
+    }
+    // 检测 reducer 对未知 action 的处理能力
+    if (
+      typeof reducer(undefined, {
+        type: ActionTypes.PROBE_UNKNOWN_ACTION()
+      }) === 'undefined'
+    ) {
+      throw new Error(
+        `Reducer "${key}" returned undefined when probed with a random type. ` +
+          `Don't try to handle ${ActionTypes.INIT} or other actions in "redux/*" ` +
+          `namespace. They are considered private. Instead, you must return the ` +
+          `current state for any unknown actions, unless it is undefined, ` +
+          `in which case you must return the initial state, regardless of the ` +
+          `action type. The initial state may not be undefined, but can be null.`
+      );
+    }
+  });
+}
+```
+
+返回合并后的 reducer。该 reducer 只能使用 `createStore` 的 `preloadedState` 参数或通过子 reducers 来返回初始状态。
+
+```js
+return function combination(state = {}, action) {
+  // 先前检测到有不符合要求的 reducer，在调用最终合并的 reducer 时才会抛出错误
+  if (shapeAssertionError) {
+    throw shapeAssertionError;
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    const warningMessage = getUnexpectedStateShapeWarningMessage(
+      state,
+      finalReducers,
+      action,
+      unexpectedKeyCache
+    );
+    if (warningMessage) {
+      warning(warningMessage);
+    }
+  }
+  // TODO
+  let hasChanged = false;
+  const nextState = {};
+  for (let i = 0; i < finalReducerKeys.length; i++) {
+    const key = finalReducerKeys[i];
+    const reducer = finalReducers[key];
+    const previousStateForKey = state[key];
+    const nextStateForKey = reducer(previousStateForKey, action);
+    if (typeof nextStateForKey === 'undefined') {
+      const errorMessage = getUndefinedStateErrorMessage(key, action);
+      throw new Error(errorMessage);
+    }
+    nextState[key] = nextStateForKey;
+    hasChanged = hasChanged || nextStateForKey !== previousStateForKey;
+  }
+  hasChanged =
+    hasChanged || finalReducerKeys.length !== Object.keys(state).length;
+  return hasChanged ? nextState : state;
+};
+```
+
+### getUnexpectedStateShapeWarningMessage
+
+检测 state 的形状，并在检测到预期外的形状时发出警告（非生产环境）。
+
+> state 的键值可 <= reducers 对象的键值。
+
+```js
+function getUnexpectedStateShapeWarningMessage(
+  inputState,
+  reducers,
+  action,
+  unexpectedKeyCache
+) {
+  const reducerKeys = Object.keys(reducers);
+  const argumentName =
+    action && action.type === ActionTypes.INIT
+      ? 'preloadedState argument passed to createStore'
+      : 'previous state received by the reducer';
+  if (reducerKeys.length === 0) {
+    return (
+      'Store does not have a valid reducer. Make sure the argument passed ' +
+      'to combineReducers is an object whose values are reducers.'
+    );
+  }
+  // state 必须是一个纯对象
+  if (!isPlainObject(inputState)) {
+    return (
+      `The ${argumentName} has unexpected type of "` +
+      {}.toString.call(inputState).match(/\s([a-z|A-Z]+)/)[1] +
+      `". Expected argument to be an object with the following ` +
+      `keys: "${reducerKeys.join('", "')}"`
+    );
+  }
+  // 过滤出 state 中存在但是 reducers 对象和缓存中不存在的键值
+  const unexpectedKeys = Object.keys(inputState).filter(
+    (key) => !reducers.hasOwnProperty(key) && !unexpectedKeyCache[key]
+  );
+  // 更新缓存
+  unexpectedKeys.forEach((key) => {
+    unexpectedKeyCache[key] = true;
+  });
+  // 如果是由调用 replaceReducer 所发出的 action，则不发出警告
+  if (action && action.type === ActionTypes.REPLACE) return;
+  if (unexpectedKeys.length > 0) {
+    return (
+      `Unexpected ${unexpectedKeys.length > 1 ? 'keys' : 'key'} ` +
+      `"${unexpectedKeys.join('", "')}" found in ${argumentName}. ` +
+      `Expected to find one of the known reducer keys instead: ` +
+      `"${reducerKeys.join('", "')}". Unexpected keys will be ignored.`
+    );
+  }
+}
+```
+
+## compose
+
+## applyMiddleware

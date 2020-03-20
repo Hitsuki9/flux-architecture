@@ -1,5 +1,5 @@
 module.exports = {
-  title: 'Flux 架构',
+  title: 'Flux Architecture',
   base: '/flux-architecture/',
   // configureWebpack: {},
   themeConfig: {
