@@ -306,17 +306,18 @@ for (let i = 0; i < reducerKeys.length; i++) {
   if (typeof reducers[key] === 'function') {
     finalReducers[key] = reducers[key];
   }
-  // 一个缓存，用于在非生产环境下检测 state 的形状使用，可防止重复发出警告
-  let unexpectedKeyCache;
-  if (process.env.NODE_ENV !== 'production') {
-    unexpectedKeyCache = {};
-  }
-  let shapeAssertionError;
-  try {
-    assertReducerShape(finalReducers);
-  } catch (e) {
-    shapeAssertionError = e;
-  }
+}
+const finalReducerKeys = Object.keys(finalReducers);
+// 一个缓存，用于在非生产环境下检测 state 的形状使用，可防止重复发出警告
+let unexpectedKeyCache;
+if (process.env.NODE_ENV !== 'production') {
+  unexpectedKeyCache = {};
+}
+let shapeAssertionError;
+try {
+  assertReducerShape(finalReducers);
+} catch (e) {
+  shapeAssertionError = e;
 }
 ```
 
@@ -380,14 +381,15 @@ return function combination(state = {}, action) {
       warning(warningMessage);
     }
   }
-  // TODO
-  let hasChanged = false;
+  let hasChanged = false; // 状态是否改变的标记
   const nextState = {};
   for (let i = 0; i < finalReducerKeys.length; i++) {
     const key = finalReducerKeys[i];
     const reducer = finalReducers[key];
+    // 取子 reducer 对应的前一个状态来调用该 reducer
     const previousStateForKey = state[key];
     const nextStateForKey = reducer(previousStateForKey, action);
+    // 子 reducer 不能返回 undefined，否则会抛出错误
     if (typeof nextStateForKey === 'undefined') {
       const errorMessage = getUndefinedStateErrorMessage(key, action);
       throw new Error(errorMessage);
@@ -395,6 +397,8 @@ return function combination(state = {}, action) {
     nextState[key] = nextStateForKey;
     hasChanged = hasChanged || nextStateForKey !== previousStateForKey;
   }
+  // 子 reducers 对应的子状态只要有一个发生变化，整个状态树都将更新
+  // 或者当旧状态中有多余的键值时也将更新，新的状态中将不含那些键
   hasChanged =
     hasChanged || finalReducerKeys.length !== Object.keys(state).length;
   return hasChanged ? nextState : state;
@@ -455,6 +459,37 @@ function getUnexpectedStateShapeWarningMessage(
 }
 ```
 
+### getUndefinedStateErrorMessage
+
+一个当子 reducer 返回 `undefined` 时生成错误描述信息的函数。
+
+```js
+function getUndefinedStateErrorMessage(key, action) {
+  const actionType = action && action.type;
+  const actionDescription =
+    (actionType && `action "${String(actionType)}"`) || 'an action';
+  return (
+    `Given ${actionDescription}, reducer "${key}" returned undefined. ` +
+    `To ignore an action, you must explicitly return the previous state. ` +
+    `If you want this reducer to hold no value, you can return null instead of undefined.`
+  );
+}
+```
+
 ## compose
+
+`compose` 的作用很简单，就是返回一个将参数中的函数按顺序调用，并且前一个函数的返回值将作为后一个函数的参数的函数。
+
+```js
+function compose(...funcs) {
+  if (funcs.length === 0) {
+    return (arg) => arg;
+  }
+  if (funcs.length === 1) {
+    return funcs[0];
+  }
+  return funcs.reduce((a, b) => (...args) => a(b(...args)));
+}
+```
 
 ## applyMiddleware
