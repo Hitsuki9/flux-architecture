@@ -478,7 +478,11 @@ function getUndefinedStateErrorMessage(key, action) {
 
 ## compose
 
-`compose` 的作用很简单，就是返回一个将参数中的函数按顺序调用，并且前一个函数的返回值将作为后一个函数的参数的函数。
+`funcs: ...Function` 需要组合的函数。
+
+`returns: Function` 通过从右至左组合参数函数而获得的函数。例如，`compose(f, g, h)` 的结果与 `(...args) => f(g(h(...args)))` 相同。
+
+`compose` 的作用很简单，就是返回一个将参数中的函数按倒序调用，并且前一个函数的返回值将作为后一个函数的参数的函数。
 
 ```js
 function compose(...funcs) {
@@ -493,3 +497,132 @@ function compose(...funcs) {
 ```
 
 ## applyMiddleware
+
+`middlewares: ...Function` 需要应用的中间件链。
+
+`returns: Function` 一个应用了中间件的 store 增强器函数。
+
+因为中间件可能是异步的，所以它应该是组合链中的第一个 store 增强器。
+
+> 每个中间件都会被赋予 `dispatch` 和 `getState` 函数作为参数。
+
+```js
+function applyMiddleware(...middlewares) {
+  // ...
+}
+```
+
+直接返回一个接收 `createStore` 作为参数，并且返回一个增强的 `createStore` 的函数。
+
+```js
+return (createStore) => (...args) => {
+  const store = createStore(...args);
+  // 不能在构建中间件的过程中进行分发，因为其它中间件可能不会应用在这次分发中
+  let dispatch = () => {
+    throw new Error(
+      'Dispatching while constructing your middleware is not allowed. ' +
+        'Other middleware would not be applied to this dispatch.'
+    );
+  };
+  const middlewareAPI = {
+    getState: store.getState,
+    // 注意这里没有直接引用 dispatch 是为了之后 dispatch 被覆写以后可以调用最新的 dispatch
+    dispatch: (...args) => dispatch(...args)
+  };
+  // 中间件形如
+  // ({ dispatch, getState }) => next => action => {
+  //   ...
+  //   return next(action);
+  // };
+  // 则 chain 中函数形如
+  // next => action => {
+  //   ...
+  //   return next(action);
+  // };
+  // 即传入 redux 原生的 dispatch，返回一个新的 dispatch 并向下传递
+  // 下一个中间件接收到新的 dispatch 后再返回一个新的 dispatch 并向下传递，以此类推
+  // 调用过程中最后才调用 redux 原生的 dispatch
+  const chain = middlewares.map((middleware) => middleware(middlewareAPI));
+  // 中间件组合完毕后将得到的 dispatch 覆盖之前用于阻止分发的 dispatch
+  dispatch = compose(...chain)(store.dispatch);
+  return {
+    ...store,
+    dispatch
+  };
+};
+```
+
+> `middlewareAPI` 中的 `dispatch` 和 `next` 的区别是 `next` 是调用上一个中间件传来的 dispatch，而前者则是从头开始调用中间件组合完毕后得到的 dispatch。
+
+## bindActionCreators
+
+`actionCreators: Function|Object` 一个 value 为 action creator 的对象。一个简便的方法是通过 ES6 的 `import * as reducers` 来获得。也可以传入一个函数。
+
+`dispatch: Function` store 提供的 `dispatch` 函数。
+
+`return: Function|Object` 该对象与参数对象形状相同，但是每个 action creator 都被包装在 `dispatch` 调用中。如果参数是函数，则返回值也是函数。
+
+将 action creators 包装在 `dispatch` 调用中，以便可以直接调用它们。
+
+```js
+// action creator 函数类似
+function addTodo(text) {
+  return {
+    type: 'ADD_TODO',
+    text
+  };
+}
+// 返回一个 action
+```
+
+```js
+function bindActionCreators(actionCreators, dispatch) {
+  // ...
+}
+```
+
+`actionCreators` 是函数则直接调用 `bindActionCreator` 并返回
+
+```js
+if (typeof actionCreators === 'function') {
+  return bindActionCreator(actionCreators, dispatch);
+}
+```
+
+### bindActionCreator
+
+用 `dispatch` 包装 action creator。
+
+```js
+function bindActionCreator(actionCreator, dispatch) {
+  return function() {
+    return dispatch(actionCreator.apply(this, arguments));
+  };
+}
+```
+
+`actionCreators` 参数不符合要求时抛出错误。
+
+```js
+if (typeof actionCreators !== 'object' || actionCreators === null) {
+  throw new Error(
+    `bindActionCreators expected an object or a function, instead received ${
+      actionCreators === null ? 'null' : typeof actionCreators
+    }. ` +
+      `Did you write "import ActionCreators from" instead of "import * as ActionCreators from"?`
+  );
+}
+```
+
+构建返回值，过滤掉 value 不是函数的项。
+
+```js
+const boundActionCreators = {};
+for (const key in actionCreators) {
+  const actionCreator = actionCreators[key];
+  if (typeof actionCreator === 'function') {
+    boundActionCreators[key] = bindActionCreator(actionCreator, dispatch);
+  }
+}
+return boundActionCreators;
+```

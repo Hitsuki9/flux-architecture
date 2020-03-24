@@ -12,7 +12,7 @@ Flux 中允许有多个 store，但是 Redux 中只允许有一个，相较于 F
 
 - Redux 中没有 dispatcher 的概念。
 
-Redux 去除了 dispatcher，使用 store 的 `dispatch()` 方法来把 actions 传给 store。由于所有的 actions 都会经过这个 `dispatch()` 方法，Redux 利用这一点实现了与 Koa 类似的 middleware 机制，middleware 可以让从 actions 被 dispatch 后到到达 store 的这一过程被拦截并运行插入的代码来任意操作 actions 和 <!-- TODO -->store，这可以很容易地实现日志打印、错误收集、API 请求等功能。
+Redux 去除了 dispatcher，使用 store 的 `dispatch()` 方法来把 actions 传给 store。由于所有的 actions 都会经过这个 `dispatch()` 方法，Redux 利用这一点实现了与 Koa 类似的 middleware 机制，middleware 可以让从 actions 被 dispatch 后到到达 store 的这一过程被拦截并运行插入的代码来任意操作 actions 和 store，这可以很容易地实现日志打印、错误收集、API 请求等功能。
 
 ## Redux 设计和使用的三大原则
 

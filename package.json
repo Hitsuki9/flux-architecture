@@ -4,6 +4,7 @@
   "description": "",
   "scripts": {
     "docs:dev": "vuepress dev docs",
+    "docs:build": "vuepress build docs",
     "lint": "prettier --write \"./docs/**/*.{js,md}\""
   },
   "keywords": [
