@@ -13,7 +13,7 @@ module.exports = {
     sidebar: {
       '/flux/': ['', 'dispatcher', 'action', 'store', 'view'],
       '/redux/': ['', 'source-code'],
-      '/vuex/': ['']
+      '/vuex/': ['', 'source-code']
     }
   },
   markdown: {
