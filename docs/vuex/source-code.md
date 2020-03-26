@@ -78,7 +78,8 @@ this._mutations = Object.create(null); // TODO
 this._wrappedGetters = Object.create(null); // TODO
 // 处理 options 参数，生成模块收集实例，它的 root 属性即为根模块实例
 this._modules = new ModuleCollection(options);
-this._modulesNamespaceMap = Object.create(null); // TODO
+// 命名空间与模块映射 map
+this._modulesNamespaceMap = Object.create(null);
 this._subscribers = []; // TODO
 this._watcherVM = new Vue(); // TODO
 this._makeLocalGettersCache = Object.create(null); // TODO
@@ -106,10 +107,79 @@ installModule(this, state, [], this._modules.root);
 resetStoreVM(this, state);
 // 调用插件，参数为 store 实例
 plugins.forEach((plugin) => plugin(this));
+// 是否订阅到 devtools 插件
 const useDevtools =
   options.devtools !== undefined ? options.devtools : Vue.config.devtools;
 if (useDevtools) {
   devtoolPlugin(this);
+}
+```
+
+### installModule
+
+```js
+function installModule(store, rootState, path, module, hot) {
+  const isRoot = !path.length; // 是否是根模块
+  // 获得模块的命名空间
+  const namespace = store._modules.getNamespace(path);
+  // 如果模块启用了命名空间，则注册到命名空间 map
+  if (module.namespaced) {
+    // 非生产环境下注册重复的命名空间时发出警告
+    if (
+      store._modulesNamespaceMap[namespace] &&
+      process.env.NODE_ENV !== 'production'
+    ) {
+      console.error(
+        `[vuex] duplicate namespace ${namespace} for the namespaced module ${path.join(
+          '/'
+        )}`
+      );
+    }
+    store._modulesNamespaceMap[namespace] = module;
+  }
+  // 不是根模块
+  if (!isRoot && !hot) {
+    // TODO
+    const parentState = getNestedState(rootState, path.slice(0, -1));
+    const moduleName = path[path.length - 1];
+    store._withCommit(() => {
+      if (process.env.NODE_ENV !== 'production') {
+        if (moduleName in parentState) {
+          console.warn(
+            `[vuex] state field "${moduleName}" was overridden by a module with the same name at "${path.join(
+              '.'
+            )}"`
+          );
+        }
+      }
+      Vue.set(parentState, moduleName, module.state);
+    });
+  }
+  const local = (module.context = makeLocalContext(store, namespace, path));
+  module.forEachMutation((mutation, key) => {
+    const namespacedType = namespace + key;
+    registerMutation(store, namespacedType, mutation, local);
+  });
+  module.forEachAction((action, key) => {
+    const type = action.root ? key : namespace + key;
+    const handler = action.handler || action;
+    registerAction(store, type, handler, local);
+  });
+  module.forEachGetter((getter, key) => {
+    const namespacedType = namespace + key;
+    registerGetter(store, namespacedType, getter, local);
+  });
+  module.forEachChild((child, key) => {
+    installModule(store, rootState, path.concat(key), child, hot);
+  });
+}
+```
+
+### getNestedState
+
+```js
+function getNestedState(state, path) {
+  return path.reduce((state, key) => state[key], state);
 }
 ```
 
@@ -151,6 +221,7 @@ class ModuleCollection {
       return module.getChild(key);
     }, this.root);
   }
+  // 根据模块路径生成命名空间
   getNamespace(path) {
     let module = this.root;
     return path.reduce((namespace, key) => {
