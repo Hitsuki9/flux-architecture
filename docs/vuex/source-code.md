@@ -71,11 +71,13 @@ const {
   plugins = [], // 插件
   strict = false // 是否是严格模式
 } = options;
-this._committing = false; // TODO
-this._actions = Object.create(null); // TODO
+this._committing = false; // 是否正在提交
+this._actions = Object.create(null); // 全局 actions
 this._actionSubscribers = []; // TODO
-this._mutations = Object.create(null); // TODO
-this._wrappedGetters = Object.create(null); // TODO
+// 所有模块的 mutations 集合（每个 mutation 是一个数组）
+this._mutations = Object.create(null);
+// 所有模块的 getters 集合
+this._wrappedGetters = Object.create(null);
 // 处理 options 参数，生成模块收集实例，它的 root 属性即为根模块实例
 this._modules = new ModuleCollection(options);
 // 命名空间与模块映射 map
@@ -99,10 +101,61 @@ this.commit = function boundCommit(type, payload, options) {
 };
 ```
 
+### dispatch
+
 ```js
-// TODO
+dispatch (_type, _payload) {
+  // 检查使用对象风格调用的 dispatch
+  const {
+    type,
+    payload
+  } = unifyObjectStyle(_type, _payload)
+  // 根据参数构建出 action 并获取已注册的对应的 action
+  const action = { type, payload }
+  const entry = this._actions[type]
+  // 没有找到对应的 action
+  if (!entry) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error(`[vuex] unknown action type: ${type}`)
+    }
+    return
+  }
+  try {
+    // TODO
+    this._actionSubscribers
+      .slice() // shallow copy to prevent iterator invalidation if subscriber synchronously calls unsubscribe
+      .filter(sub => sub.before)
+      .forEach(sub => sub.before(action, this.state))
+  } catch (e) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(`[vuex] error in before action subscribers: `)
+      console.error(e)
+    }
+  }
+  const result = entry.length > 1
+    ? Promise.all(entry.map(handler => handler(payload)))
+    : entry[0](payload)
+  return result.then(res => {
+    try {
+      this._actionSubscribers
+        .filter(sub => sub.after)
+        .forEach(sub => sub.after(action, this.state))
+    } catch (e) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`[vuex] error in after action subscribers: `)
+        console.error(e)
+      }
+    }
+    return res
+  })
+}
+```
+
+```js
 this.strict = strict;
 const state = this._modules.root.state;
+// 初始化根模块并递归注册子模块
+// 收集所有模块的 getters 到 this._wrappedGetters
 installModule(this, state, [], this._modules.root);
 resetStoreVM(this, state);
 // 调用插件，参数为 store 实例
@@ -116,6 +169,8 @@ if (useDevtools) {
 ```
 
 ### installModule
+
+递归注册模块及其子模块。
 
 ```js
 function installModule(store, rootState, path, module, hot) {
@@ -139,10 +194,12 @@ function installModule(store, rootState, path, module, hot) {
   }
   // 不是根模块
   if (!isRoot && !hot) {
-    // TODO
+    // 获取父 state
     const parentState = getNestedState(rootState, path.slice(0, -1));
+    // 获取模块名
     const moduleName = path[path.length - 1];
     store._withCommit(() => {
+      // 非生产环境下，如果父 state 中有与该子模块名同名的属性，则发出警告
       if (process.env.NODE_ENV !== 'production') {
         if (moduleName in parentState) {
           console.warn(
@@ -152,10 +209,13 @@ function installModule(store, rootState, path, module, hot) {
           );
         }
       }
+      // 为父 state 添加属性并响应化，key 为子模块名，value 为子模块的 state
       Vue.set(parentState, moduleName, module.state);
     });
   }
+  // 创建模块对应的上下文
   const local = (module.context = makeLocalContext(store, namespace, path));
+  // 注册 mutations
   module.forEachMutation((mutation, key) => {
     const namespacedType = namespace + key;
     registerMutation(store, namespacedType, mutation, local);
@@ -170,6 +230,7 @@ function installModule(store, rootState, path, module, hot) {
     registerGetter(store, namespacedType, getter, local);
   });
   module.forEachChild((child, key) => {
+    // 递归注册模块
     installModule(store, rootState, path.concat(key), child, hot);
   });
 }
@@ -177,9 +238,154 @@ function installModule(store, rootState, path, module, hot) {
 
 ### getNestedState
 
+获取嵌套的 state。
+
 ```js
 function getNestedState(state, path) {
   return path.reduce((state, key) => state[key], state);
+}
+```
+
+### \_withCommit
+
+防止在执行指定函数期间进行提交。
+
+```js
+_withCommit (fn) {
+  const committing = this._committing
+  this._committing = true
+  fn()
+  this._committing = committing
+}
+```
+
+### makeLocalContext
+
+创建模块对应的上下文。
+
+```js
+function makeLocalContext(store, namespace, path) {
+  const noNamespace = namespace === ''; // 是否没有命名空间
+  const local = {
+    dispatch: noNamespace
+      ? // 没有命名空间，则直接使用 store 的 dispatch
+        store.dispatch
+      : // 有命名空间，则创建一个新的 dispatch
+        (_type, _payload, _options) => {
+          // 统一两种形式的入参
+          const args = unifyObjectStyle(_type, _payload, _options);
+          const { payload, options } = args;
+          let { type } = args;
+          // 没有 options 参数或者 options.root 不为 true
+          // 则说明进行局部 dispatch，更改 type 为命名空间下的 type
+          if (!options || !options.root) {
+            type = namespace + type;
+            // 非生产环境下若 TODO
+            if (
+              process.env.NODE_ENV !== 'production' &&
+              !store._actions[type]
+            ) {
+              console.error(
+                `[vuex] unknown local action type: ${args.type}, global type: ${type}`
+              );
+              return;
+            }
+          }
+          return store.dispatch(type, payload);
+        },
+    // commit 与 dispatch 同理
+    commit: noNamespace
+      ? store.commit
+      : (_type, _payload, _options) => {
+          const args = unifyObjectStyle(_type, _payload, _options);
+          const { payload, options } = args;
+          let { type } = args;
+          if (!options || !options.root) {
+            type = namespace + type;
+            if (
+              process.env.NODE_ENV !== 'production' &&
+              !store._mutations[type]
+            ) {
+              console.error(
+                `[vuex] unknown local mutation type: ${args.type}, global type: ${type}`
+              );
+              return;
+            }
+          }
+          store.commit(type, payload, options);
+        }
+  };
+  // 为上下文定义 getters 和 state
+  // 必须延迟获取 getters 和 state 对象，因为它们会因为 vm 的更新而更改
+  Object.defineProperties(local, {
+    getters: {
+      get: noNamespace
+        ? // 无命名空间
+          () => store.getters
+        : // 有命名空间
+          () => makeLocalGetters(store, namespace)
+    },
+    state: {
+      get: () => getNestedState(store.state, path)
+    }
+  });
+  return local;
+}
+```
+
+### unifyObjectStyle
+
+统一 `dispatch` 和 `commit` 的两种不同形式的入参。
+
+- `dispatch(type: string, payload?: any, options?: Object)`
+
+- `dispatch(action: Object, options?: Object)`
+
+- `commit(type: string, payload?: any, options?: Object)`
+
+- `commit(mutation: Object, options?: Object)`
+
+```js
+function unifyObjectStyle(type, payload, options) {
+  // 如果 type 是对象，且有 type 属性，则为第二种传参形式
+  // 统一成第一种传参形式
+  if (isObject(type) && type.type) {
+    options = payload;
+    payload = type;
+    type = type.type;
+  }
+  // 非生产环境下真实的 type 不为字符串时抛出错误
+  if (process.env.NODE_ENV !== 'production') {
+    assert(
+      typeof type === 'string',
+      `expects string as the type, but found ${typeof type}.`
+    );
+  }
+  return { type, payload, options };
+}
+
+// util.js
+function isObject(obj) {
+  return obj !== null && typeof obj === 'object';
+}
+```
+
+### registerMutation
+
+注册模块的 mutations 到 store。
+
+```js
+/**
+ * @param {Store} store store 实例
+ * @param {string} type
+ * @param {Function} handler mutation
+ * @param {Object} local 模块上下文
+ */
+function registerMutation(store, type, handler, local) {
+  const entry = store._mutations[type] || (store._mutations[type] = []);
+  entry.push(function wrappedMutationHandler(payload) {
+    handler.call(store, local.state, payload);
+  });
 }
 ```
 
@@ -379,19 +585,23 @@ class Module {
       this._rawModule.getters = rawModule.getters;
     }
   }
+  // 遍历模块的子模块
   forEachChild(fn) {
     forEachValue(this._children, fn);
   }
+  // 遍历模块的 getters
   forEachGetter(fn) {
     if (this._rawModule.getters) {
       forEachValue(this._rawModule.getters, fn);
     }
   }
+  // 遍历模块的 actions
   forEachAction(fn) {
     if (this._rawModule.actions) {
       forEachValue(this._rawModule.actions, fn);
     }
   }
+  // 遍历模块的 mutations
   forEachMutation(fn) {
     if (this._rawModule.mutations) {
       forEachValue(this._rawModule.mutations, fn);
