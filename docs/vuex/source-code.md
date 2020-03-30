@@ -20,7 +20,9 @@ src
 
 ## store
 
-`Store` 类构造函数。`options` 参数可包含 `state`、`getters`、`mutations` 和 `actions`。
+`Store` 类构造函数。`options` 参数可包含 `state`、`getters`、`mutations`、`actions`、`plugins`、`strict`、`devtools` 和 `modules`。
+
+`modules` 中又可包含 `state`、`getters`、`mutations`、`actions`、`namespaced` 和 `modules`。
 
 ```js
 let Vue; // 调用 install 时绑定
@@ -74,7 +76,8 @@ const {
 this._committing = false; // 是否正在提交
 this._actions = Object.create(null); // 全局 actions
 this._actionSubscribers = []; // TODO
-// 所有模块的 mutations 集合（每个 mutation 是一个数组）
+// 所有模块的 mutations 集合
+// 每个 mutation 是一个数组，为了多个模块下的同名 mutations 能响应同一个 commit
 this._mutations = Object.create(null);
 // 所有模块的 getters 集合
 this._wrappedGetters = Object.create(null);
@@ -83,7 +86,7 @@ this._modules = new ModuleCollection(options);
 // 命名空间与模块映射 map
 this._modulesNamespaceMap = Object.create(null);
 this._subscribers = []; // TODO
-this._watcherVM = new Vue(); // TODO
+this._watcherVM = new Vue(); // 用于观察的 vm 实例
 this._makeLocalGettersCache = Object.create(null); // TODO
 ```
 
@@ -93,6 +96,8 @@ this._makeLocalGettersCache = Object.create(null); // TODO
 const store = this;
 const { dispatch, commit } = this;
 // 绑定后的 dispatch 与 commit 由原型方法变成了实例方法
+// 全局 dispatch 不需要第三个参数
+// TODO
 this.dispatch = function boundDispatch(type, payload) {
   return dispatch.call(store, type, payload);
 };
@@ -111,6 +116,7 @@ dispatch (_type, _payload) {
     payload
   } = unifyObjectStyle(_type, _payload)
   // 根据参数构建出 action 并获取已注册的对应的 action
+  // TODO
   const action = { type, payload }
   const entry = this._actions[type]
   // 没有找到对应的 action
@@ -175,7 +181,7 @@ if (useDevtools) {
 ```js
 function installModule(store, rootState, path, module, hot) {
   const isRoot = !path.length; // 是否是根模块
-  // 获得模块的命名空间
+  // 获得模块路径对应模块的命名空间
   const namespace = store._modules.getNamespace(path);
   // 如果模块启用了命名空间，则注册到命名空间 map
   if (module.namespaced) {
@@ -265,14 +271,17 @@ _withCommit (fn) {
 
 ```js
 function makeLocalContext(store, namespace, path) {
-  const noNamespace = namespace === ''; // 是否没有命名空间
+  // 命名空间是否为 ''
+  // 是 '' 说明是根模块，否则是子模块
+  const noNamespace = namespace === '';
   const local = {
     dispatch: noNamespace
-      ? // 没有命名空间，则直接使用 store 的 dispatch
+      ? // 是根模块，则直接使用 store 的 dispatch
         store.dispatch
-      : // 有命名空间，则创建一个新的 dispatch
+      : // 有子模块，则创建一个新的 dispatch
         (_type, _payload, _options) => {
           // 统一两种形式的入参
+          // TODO
           const args = unifyObjectStyle(_type, _payload, _options);
           const { payload, options } = args;
           let { type } = args;
