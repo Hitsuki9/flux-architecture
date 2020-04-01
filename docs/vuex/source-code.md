@@ -74,10 +74,12 @@ const {
   strict = false // 是否是严格模式
 } = options;
 this._committing = false; // 是否正在提交
-this._actions = Object.create(null); // 全局 actions
+// 所有模块的 actions 集合
+// 每个 action type 对应一个数组，为了多个模块下的同名 actions 能响应同一个 dispatch
+this._actions = Object.create(null);
 this._actionSubscribers = []; // TODO
 // 所有模块的 mutations 集合
-// 每个 mutation 是一个数组，为了多个模块下的同名 mutations 能响应同一个 commit
+// 每个 mutation type 对应一个数组，为了多个模块下的同名 mutations 能响应同一个 commit
 this._mutations = Object.create(null);
 // 所有模块的 getters 集合
 this._wrappedGetters = Object.create(null);
@@ -221,22 +223,26 @@ function installModule(store, rootState, path, module, hot) {
   }
   // 创建模块对应的上下文
   const local = (module.context = makeLocalContext(store, namespace, path));
-  // 注册 mutations
+  // 注册模块的 mutations
   module.forEachMutation((mutation, key) => {
     const namespacedType = namespace + key;
     registerMutation(store, namespacedType, mutation, local);
   });
+  // 注册模块的 actions
   module.forEachAction((action, key) => {
+    // 如果在模块内注册全局的 action，则不需要加命名空间前缀
+    // 并取 action.handler 为真实的 action
     const type = action.root ? key : namespace + key;
     const handler = action.handler || action;
     registerAction(store, type, handler, local);
   });
+  // 注册模块的 getters
   module.forEachGetter((getter, key) => {
     const namespacedType = namespace + key;
     registerGetter(store, namespacedType, getter, local);
   });
   module.forEachChild((child, key) => {
-    // 递归注册模块
+    // 递归注册子模块
     installModule(store, rootState, path.concat(key), child, hot);
   });
 }
@@ -278,18 +284,17 @@ function makeLocalContext(store, namespace, path) {
     dispatch: noNamespace
       ? // 是根模块，则直接使用 store 的 dispatch
         store.dispatch
-      : // 有子模块，则创建一个新的 dispatch
+      : // 是子模块，则创建一个新的 dispatch
         (_type, _payload, _options) => {
           // 统一两种形式的入参
-          // TODO
           const args = unifyObjectStyle(_type, _payload, _options);
           const { payload, options } = args;
           let { type } = args;
           // 没有 options 参数或者 options.root 不为 true
-          // 则说明进行局部 dispatch，更改 type 为命名空间下的 type
+          // 则说明进行局部 dispatch，给 type 加上命名空间前缀
           if (!options || !options.root) {
             type = namespace + type;
-            // 非生产环境下若 TODO
+            // 非生产环境下若 type 没有注册到 _actions 中过则抛出错误
             if (
               process.env.NODE_ENV !== 'production' &&
               !store._actions[type]
@@ -300,6 +305,7 @@ function makeLocalContext(store, namespace, path) {
               return;
             }
           }
+          // 新 dispatch 最终还是调用 store 的 dispatch
           return store.dispatch(type, payload);
         },
     // commit 与 dispatch 同理
@@ -325,13 +331,13 @@ function makeLocalContext(store, namespace, path) {
         }
   };
   // 为上下文定义 getters 和 state
-  // 必须延迟获取 getters 和 state 对象，因为它们会因为 vm 的更新而更改
+  // 必须惰性获取 getters 和 state 对象，因为它们会因为 vm 的更新而更改
   Object.defineProperties(local, {
     getters: {
       get: noNamespace
-        ? // 无命名空间
+        ? // 是根模块，直接取 store 上的 getters
           () => store.getters
-        : // 有命名空间
+        : // 是子模块，
           () => makeLocalGetters(store, namespace)
     },
     state: {
@@ -339,6 +345,39 @@ function makeLocalContext(store, namespace, path) {
     }
   });
   return local;
+}
+```
+
+### makeLocalGetters
+
+设置模块上下文中的 getters。
+
+```js
+function makeLocalGetters(store, namespace) {
+  // 如果没有存储过模块名对应的 getters，则新生成一个 getters 代理并存入 map
+  if (!store._makeLocalGettersCache[namespace]) {
+    const gettersProxy = {};
+    const splitPos = namespace.length;
+    // TODO
+    Object.keys(store.getters).forEach((type) => {
+      // skip if the target getter is not match this namespace
+      if (type.slice(0, splitPos) !== namespace) return;
+
+      // extract local getter type
+      const localType = type.slice(splitPos);
+
+      // Add a port to the getters proxy.
+      // Define as getter property because
+      // we do not want to evaluate the getters in this time.
+      Object.defineProperty(gettersProxy, localType, {
+        get: () => store.getters[type],
+        enumerable: true
+      });
+    });
+    store._makeLocalGettersCache[namespace] = gettersProxy;
+  }
+
+  return store._makeLocalGettersCache[namespace];
 }
 ```
 
@@ -381,7 +420,7 @@ function isObject(obj) {
 
 ### registerMutation
 
-注册模块的 mutations 到 store。
+注册模块的 mutations 到 `store._mutations`。
 
 ```js
 /**
@@ -395,6 +434,87 @@ function registerMutation(store, type, handler, local) {
   entry.push(function wrappedMutationHandler(payload) {
     handler.call(store, local.state, payload);
   });
+}
+```
+
+### registerAction
+
+注册模块的 actions 到 `store_actions`。
+
+```js
+/**
+ * @param {Store} store store 实例
+ * @param {string} type
+ * @param {Function} handler action
+ * @param {Object} local 模块上下文
+ */
+function registerAction(store, type, handler, local) {
+  const entry = store._actions[type] || (store._actions[type] = []);
+  entry.push(function wrappedActionHandler(payload) {
+    let res = handler.call(
+      store,
+      // action 的 context 参数
+      {
+        dispatch: local.dispatch,
+        commit: local.commit,
+        getters: local.getters,
+        state: local.state,
+        rootGetters: store.getters,
+        rootState: store.state
+      },
+      payload
+    );
+    // 如果 action 返回的不是一个 promise，则通过 Promise.resolve() 将其 promise 化
+    // 等价于 res = new Promise(resolve => resolve(res))
+    // 目的是为了在 dispatch 中能够调用 Promise.all()
+    if (!isPromise(res)) {
+      res = Promise.resolve(res);
+    }
+    if (store._devtoolHook) {
+      return res.catch((err) => {
+        store._devtoolHook.emit('vuex:error', err);
+        throw err;
+      });
+    } else {
+      return res;
+    }
+  });
+}
+
+// util.js
+// 判断指定值是否是一个 promise 对象
+function isPromise(val) {
+  return val && typeof val.then === 'function';
+}
+```
+
+### registerGetter
+
+注册模块的 getters 到 `store._wrappedGetters`。
+
+```js
+/**
+ * @param {Store} store store 实例
+ * @param {string} type
+ * @param {Function} rawGetter getter
+ * @param {Object} local 模块上下文
+ */
+function registerGetter(store, type, rawGetter, local) {
+  // getters 不能重名
+  if (store._wrappedGetters[type]) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error(`[vuex] duplicate getter key: ${type}`);
+    }
+    return;
+  }
+  store._wrappedGetters[type] = function wrappedGetter(store) {
+    return rawGetter(
+      local.state, // 模块 state
+      local.getters, // 模块 getters
+      store.state, // 全局 state
+      store.getters // 全局 getters
+    );
+  };
 }
 ```
 

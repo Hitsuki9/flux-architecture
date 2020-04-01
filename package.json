@@ -9,7 +9,8 @@
   },
   "keywords": [
     "flux",
-    "redux"
+    "redux",
+    "vuex"
   ],
   "author": "Hitsuki9",
   "license": "MIT",
