@@ -77,7 +77,7 @@ this._committing = false; // 是否正在提交
 // 所有模块的 actions 集合
 // 每个 action type 对应一个数组，为了多个模块下的同名 actions 能响应同一个 dispatch
 this._actions = Object.create(null);
-this._actionSubscribers = []; // TODO
+this._actionSubscribers = []; // actions 订阅列表
 // 所有模块的 mutations 集合
 // 每个 mutation type 对应一个数组，为了多个模块下的同名 mutations 能响应同一个 commit
 this._mutations = Object.create(null);
@@ -87,9 +87,9 @@ this._wrappedGetters = Object.create(null);
 this._modules = new ModuleCollection(options);
 // 命名空间与模块映射 map
 this._modulesNamespaceMap = Object.create(null);
-this._subscribers = []; // TODO
-this._watcherVM = new Vue(); // 用于观察的 vm 实例
-this._makeLocalGettersCache = Object.create(null); // TODO
+this._subscribers = []; // mutations 订阅列表
+this._watcherVM = new Vue(); // 用于监听的 vm 实例
+this._makeLocalGettersCache = Object.create(null); // getters 缓存
 ```
 
 绑定 `dispatch` 和 `commit` 的上下文。
@@ -98,8 +98,6 @@ this._makeLocalGettersCache = Object.create(null); // TODO
 const store = this;
 const { dispatch, commit } = this;
 // 绑定后的 dispatch 与 commit 由原型方法变成了实例方法
-// 全局 dispatch 不需要第三个参数
-// TODO
 this.dispatch = function boundDispatch(type, payload) {
   return dispatch.call(store, type, payload);
 };
@@ -118,7 +116,6 @@ dispatch (_type, _payload) {
     payload
   } = unifyObjectStyle(_type, _payload)
   // 根据参数构建出 action 并获取已注册的对应的 action
-  // TODO
   const action = { type, payload }
   const entry = this._actions[type]
   // 没有找到对应的 action
@@ -129,10 +126,9 @@ dispatch (_type, _payload) {
     return
   }
   try {
-    // TODO
     this._actionSubscribers
-      .slice() // shallow copy to prevent iterator invalidation if subscriber synchronously calls unsubscribe
-      .filter(sub => sub.before)
+      .slice() // 浅拷贝以防止用户同步退订对此次迭代产生的影响
+      .filter(sub => sub.before) // 过滤掉没有 before 属性的订阅对象
       .forEach(sub => sub.before(action, this.state))
   } catch (e) {
     if (process.env.NODE_ENV !== 'production') {
@@ -141,10 +137,13 @@ dispatch (_type, _payload) {
     }
   }
   const result = entry.length > 1
-    ? Promise.all(entry.map(handler => handler(payload)))
-    : entry[0](payload)
+    ? // dispatch 多个 action
+      Promise.all(entry.map(handler => handler(payload)))
+    : // dispatch 单个 action
+      entry[0](payload)
   return result.then(res => {
     try {
+      // action 异步逻辑执行完成后调用订阅对象的 after
       this._actionSubscribers
         .filter(sub => sub.after)
         .forEach(sub => sub.after(action, this.state))
@@ -159,12 +158,55 @@ dispatch (_type, _payload) {
 }
 ```
 
+### commit
+
+```js
+commit (_type, _payload, _options) {
+  // 检查使用对象风格调用的 commit
+  const {
+    type,
+    payload,
+    options
+  } = unifyObjectStyle(_type, _payload, _options)
+  // 根据参数构建出 mutation 并获取已注册的对应的 mutation
+  const mutation = { type, payload }
+  const entry = this._mutations[type]
+  // 没有找到对应的 mutation
+  if (!entry) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error(`[vuex] unknown mutation type: ${type}`)
+    }
+    return
+  }
+  this._withCommit(() => {
+    // commit 多个 mutation
+    entry.forEach(function commitIterator (handler) {
+      handler(payload)
+    })
+  })
+
+  this._subscribers
+    .slice() // 浅拷贝以防止用户同步退订对此次迭代产生的影响
+    .forEach(sub => sub(mutation, this.state))
+
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    options && options.silent
+  ) {
+    console.warn(
+      `[vuex] mutation type: ${type}. Silent option has been removed. ` +
+      'Use the filter functionality in the vue-devtools'
+    )
+  }
+}
+```
+
 ```js
 this.strict = strict;
 const state = this._modules.root.state;
 // 初始化根模块并递归注册子模块
-// 收集所有模块的 getters 到 this._wrappedGetters
 installModule(this, state, [], this._modules.root);
+// 初始化 store vm
 resetStoreVM(this, state);
 // 调用插件，参数为 store 实例
 plugins.forEach((plugin) => plugin(this));
@@ -173,6 +215,110 @@ const useDevtools =
   options.devtools !== undefined ? options.devtools : Vue.config.devtools;
 if (useDevtools) {
   devtoolPlugin(this);
+}
+```
+
+其余的原型方法。
+
+```js
+get state () {
+  return this._vm._data.$$state
+}
+set state (v) {
+  if (process.env.NODE_ENV !== 'production') {
+    assert(false, `use store.replaceState() to explicit replace store state.`)
+  }
+}
+// 订阅 store 的 mutation
+subscribe (fn) {
+  return genericSubscribe(fn, this._subscribers)
+}
+// 订阅 store 的 action
+subscribeAction (fn) {
+  // fn 是函数则转化为一个具有 before 属性的对象，before 的值即为 fn
+  const subs = typeof fn === 'function' ? { before: fn } : fn
+  return genericSubscribe(subs, this._actionSubscribers)
+}
+// 响应式地监听 getter
+watch (getter, cb, options) {
+  // 只能监听函数的返回值
+  if (process.env.NODE_ENV !== 'production') {
+    assert(typeof getter === 'function', `store.watch only accepts a function.`)
+  }
+  // 调用 vm.$watch，可见 store.watch 的 options 参数与 vm.$watch 相同
+  return this._watcherVM.$watch(() => getter(this.state, this.getters), cb, options)
+}
+// 替换 store 的根状态
+replaceState (state) {
+  this._withCommit(() => {
+    this._vm._data.$$state = state
+  })
+}
+/**
+ * 注册一个动态模块
+ * @param {string|string[]} path 模块路径
+ * @param {Object} rawModule 模块对象
+ * @param {{preserveState?:boolean}} options
+ */
+registerModule (path, rawModule, options = {}) {
+  // path 统一成数组形式
+  if (typeof path === 'string') path = [path]
+  if (process.env.NODE_ENV !== 'production') {
+    // 除字符串外 path 必须是数组
+    assert(Array.isArray(path), `module path must be a string or an Array.`)
+    // 不能注册根模块
+    assert(path.length > 0, 'cannot register the root module by using registerModule.')
+  }
+  // 注册并安装模块
+  this._modules.register(path, rawModule)
+  installModule(this, this.state, path, this._modules.get(path), options.preserveState)
+  // 注册动态模块后需要重置 store._vm
+  resetStoreVM(this, this.state)
+}
+// 卸载一个动态模块
+unregisterModule (path) {
+  if (typeof path === 'string') path = [path]
+  if (process.env.NODE_ENV !== 'production') {
+    assert(Array.isArray(path), `module path must be a string or an Array.`)
+  }
+  this._modules.unregister(path)
+  this._withCommit(() => {
+    const parentState = getNestedState(this.state, path.slice(0, -1))
+    Vue.delete(parentState, path[path.length - 1])
+  })
+  // 卸载动态模块后需要重置 store
+  resetStore(this)
+}
+hotUpdate (newOptions) {
+  this._modules.update(newOptions)
+  resetStore(this, true)
+}
+// 提交并设置提交中标记
+_withCommit (fn) {
+  const committing = this._committing
+  this._committing = true
+  fn()
+  this._committing = committing
+}
+```
+
+### genericSubscribe
+
+通用的订阅逻辑。
+
+```js
+function genericSubscribe(fn, subs) {
+  // 订阅列表中没有该订阅就加入
+  if (subs.indexOf(fn) < 0) {
+    subs.push(fn);
+  }
+  // 返回一个取消订阅的函数
+  return () => {
+    const i = subs.indexOf(fn);
+    if (i > -1) {
+      subs.splice(i, 1);
+    }
+  };
 }
 ```
 
@@ -201,6 +347,7 @@ function installModule(store, rootState, path, module, hot) {
     store._modulesNamespaceMap[namespace] = module;
   }
   // 不是根模块
+  // hot 为注册动态模块使用，hot 为 true 则保留原有 state
   if (!isRoot && !hot) {
     // 获取父 state
     const parentState = getNestedState(rootState, path.slice(0, -1));
@@ -248,6 +395,109 @@ function installModule(store, rootState, path, module, hot) {
 }
 ```
 
+### resetStoreVM
+
+重置 store vm。
+
+```js
+function resetStoreVM(store, state, hot) {
+  const oldVm = store._vm;
+  // 绑定 store 的 getters
+  store.getters = {};
+  // 重置 getters 缓存
+  store._makeLocalGettersCache = Object.create(null);
+  const wrappedGetters = store._wrappedGetters;
+  const computed = {};
+  forEachValue(wrappedGetters, (fn, key) => {
+    // 利用 computed 来实现它的缓存机制
+    // direct inline function use will lead to closure preserving oldVm.
+    // 使用 partial 返回一个仅将参数保存在闭包环境中的函数
+    computed[key] = partial(fn, store);
+    Object.defineProperty(store.getters, key, {
+      get: () => store._vm[key],
+      enumerable: true // for local getters
+    });
+  });
+  // 使用一个 Vue 实例来存储状态树
+  // 取消 Vue 所有的日志与警告，以防用户添加了一些全局混合
+  const silent = Vue.config.silent;
+  Vue.config.silent = true;
+  store._vm = new Vue({
+    data: {
+      $$state: state
+    },
+    computed
+  });
+  Vue.config.silent = silent;
+  // 为新的 vm 启用严格模式
+  if (store.strict) {
+    enableStrictMode(store);
+  }
+  if (oldVm) {
+    if (hot) {
+      // 热重载？
+      // dispatch changes in all subscribed watchers
+      // to force getter re-evaluation for hot reloading.
+      store._withCommit(() => {
+        oldVm._data.$$state = null;
+      });
+    }
+    // 销毁旧的 vm
+    Vue.nextTick(() => oldVm.$destroy());
+  }
+}
+
+// util.js
+function partial(fn, arg) {
+  return function() {
+    return fn(arg);
+  };
+}
+```
+
+### resetStore
+
+重置 store。
+
+```js
+function resetStore(store, hot) {
+  // TODO
+  store._actions = Object.create(null);
+  store._mutations = Object.create(null);
+  store._wrappedGetters = Object.create(null);
+  store._modulesNamespaceMap = Object.create(null);
+  const state = store.state;
+  // init all modules
+  installModule(store, state, [], store._modules.root, true);
+  // reset vm
+  resetStoreVM(store, state, hot);
+}
+```
+
+### enableStrictMode
+
+开启严格模式。
+
+```js
+function enableStrictMode(store) {
+  // 严格模式下，深度监听 state，发生变化时若不是由 commit 引起的，则抛出错误
+  store._vm.$watch(
+    function() {
+      return this._data.$$state;
+    },
+    () => {
+      if (process.env.NODE_ENV !== 'production') {
+        assert(
+          store._committing,
+          `do not mutate vuex store state outside mutation handlers.`
+        );
+      }
+    },
+    { deep: true, sync: true }
+  );
+}
+```
+
 ### getNestedState
 
 获取嵌套的 state。
@@ -255,19 +505,6 @@ function installModule(store, rootState, path, module, hot) {
 ```js
 function getNestedState(state, path) {
   return path.reduce((state, key) => state[key], state);
-}
-```
-
-### \_withCommit
-
-防止在执行指定函数期间进行提交。
-
-```js
-_withCommit (fn) {
-  const committing = this._committing
-  this._committing = true
-  fn()
-  this._committing = committing
 }
 ```
 
@@ -354,29 +591,23 @@ function makeLocalContext(store, namespace, path) {
 
 ```js
 function makeLocalGetters(store, namespace) {
-  // 如果没有存储过模块名对应的 getters，则新生成一个 getters 代理并存入 map
+  // 如果没有缓存过模块名对应的 getters，则新生成一个 getters 代理并存入 map
   if (!store._makeLocalGettersCache[namespace]) {
     const gettersProxy = {};
     const splitPos = namespace.length;
-    // TODO
     Object.keys(store.getters).forEach((type) => {
-      // skip if the target getter is not match this namespace
+      // 如果遍历到的 getter 与命名空间不匹配则跳过
       if (type.slice(0, splitPos) !== namespace) return;
-
-      // extract local getter type
+      // 提取模块下的 getters，并添加进 getters 代理
       const localType = type.slice(splitPos);
-
-      // Add a port to the getters proxy.
-      // Define as getter property because
-      // we do not want to evaluate the getters in this time.
       Object.defineProperty(gettersProxy, localType, {
         get: () => store.getters[type],
         enumerable: true
       });
     });
+    // 添加缓存
     store._makeLocalGettersCache[namespace] = gettersProxy;
   }
-
   return store._makeLocalGettersCache[namespace];
 }
 ```
@@ -534,7 +765,7 @@ function install(_Vue) {
     return;
   }
   Vue = _Vue; // 绑定传入的 Vue 构造函数
-  applyMixin(Vue); // TODO
+  applyMixin(Vue); // 执行混入逻辑
 }
 ```
 
@@ -568,6 +799,7 @@ class ModuleCollection {
     update([], this.root, rawRootModule);
   }
   /**
+   * 注册模块
    * @param {Array<string>} path 模块路径
    * @param {Object} rawModule 模块
    * @param {boolean} runtime
@@ -597,9 +829,12 @@ class ModuleCollection {
       });
     }
   }
+  // 卸载模块
   unregister(path) {
     const parent = this.get(path.slice(0, -1));
     const key = path[path.length - 1];
+    // runtime 为 ture 静态模块，false 为动态模块
+    // 只能卸载动态模块
     if (!parent.getChild(key).runtime) return;
     parent.removeChild(key);
   }
@@ -685,6 +920,7 @@ class Module {
     this._rawModule = rawModule; // 存储原始模块对象
     // 存储原始模块对象中的 state
     const rawState = rawModule.state;
+    // 模块对象中的 state 可以是函数
     this.state = (typeof rawState === 'function' ? rawState() : rawState) || {};
   }
   // 是否启用命名空间
@@ -695,6 +931,7 @@ class Module {
   addChild(key, module) {
     this._children[key] = module;
   }
+  // 移除子模块
   removeChild(key) {
     delete this._children[key];
   }
@@ -734,6 +971,42 @@ class Module {
   forEachMutation(fn) {
     if (this._rawModule.mutations) {
       forEachValue(this._rawModule.mutations, fn);
+    }
+  }
+}
+```
+
+## mixin
+
+### applyMixin
+
+```js
+function (Vue) {
+  const version = Number(Vue.version.split('.')[0])
+  // Vue 版本 >= 2，全局混入 beforeCreate
+  if (version >= 2) {
+    Vue.mixin({ beforeCreate: vuexInit })
+  } else {
+    // override init and inject vuex init procedure
+    // for 1.x backwards compatibility.
+    const _init = Vue.prototype._init
+    Vue.prototype._init = function (options = {}) {
+      options.init = options.init
+        ? [vuexInit].concat(options.init)
+        : vuexInit
+      _init.call(this, options)
+    }
+  }
+  // Vuex 初始化钩子，注入到每个实例的初始化钩子列表中
+  function vuexInit () {
+    const options = this.$options
+    // 注入 store
+    if (options.store) {
+      this.$store = typeof options.store === 'function'
+        ? options.store()
+        : options.store
+    } else if (options.parent && options.parent.$store) {
+      this.$store = options.parent.$store
     }
   }
 }
