@@ -289,6 +289,7 @@ unregisterModule (path) {
   // 卸载动态模块后需要重置 store
   resetStore(this)
 }
+// 热更新模块
 hotUpdate (newOptions) {
   this._modules.update(newOptions)
   resetStore(this, true)
@@ -435,7 +436,8 @@ function resetStoreVM(store, state, hot) {
   }
   if (oldVm) {
     if (hot) {
-      // 热重载？
+      // 使用热重载
+      // 强制重新计算 getters？
       // dispatch changes in all subscribed watchers
       // to force getter re-evaluation for hot reloading.
       store._withCommit(() => {
@@ -461,15 +463,14 @@ function partial(fn, arg) {
 
 ```js
 function resetStore(store, hot) {
-  // TODO
+  // 清空 actions，mutations，getters 和命名空间缓存，但保留旧的 state 重新安装模块
   store._actions = Object.create(null);
   store._mutations = Object.create(null);
   store._wrappedGetters = Object.create(null);
   store._modulesNamespaceMap = Object.create(null);
   const state = store.state;
-  // init all modules
   installModule(store, state, [], store._modules.root, true);
-  // reset vm
+  // 重置 store._vm
   resetStoreVM(store, state, hot);
 }
 ```
@@ -795,6 +796,7 @@ class ModuleCollection {
       return namespace + (module.namespaced ? key + '/' : '');
     }, '');
   }
+  // 更新模块
   update(rawRootModule) {
     update([], this.root, rawRootModule);
   }
@@ -837,6 +839,41 @@ class ModuleCollection {
     // 只能卸载动态模块
     if (!parent.getChild(key).runtime) return;
     parent.removeChild(key);
+  }
+}
+```
+
+### update
+
+更新模块。
+
+```js
+function update(path, targetModule, newModule) {
+  if (process.env.NODE_ENV !== 'production') {
+    assertRawModule(path, newModule);
+  }
+  // 更新目标模块
+  targetModule.update(newModule);
+  // 更新嵌套模块
+  if (newModule.modules) {
+    for (const key in newModule.modules) {
+      // 不能更新在原始模块中不存在的子模块
+      if (!targetModule.getChild(key)) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn(
+            `[vuex] trying to add a new module '${key}' on hot reloading, ` +
+              'manual reload is needed'
+          );
+        }
+        return;
+      }
+      // 递归更新嵌套模块
+      update(
+        path.concat(key),
+        targetModule.getChild(key),
+        newModule.modules[key]
+      );
+    }
   }
 }
 ```
@@ -939,6 +976,7 @@ class Module {
   getChild(key) {
     return this._children[key];
   }
+  // 更新模块
   update(rawModule) {
     this._rawModule.namespaced = rawModule.namespaced;
     if (rawModule.actions) {
@@ -1010,4 +1048,92 @@ function (Vue) {
     }
   }
 }
+```
+
+## helpers
+
+### normalizeNamespace
+
+返回一个接受包含命名空间和 `map` 这两个参数的函数。它将规范化命名空间，然后使用 `fn` 处理新的命名空间和 `map`。
+
+```js
+function normalizeNamespace(fn) {
+  return (namespace, map) => {
+    // namespace 接受到的不是字符串则认为是传给 map 的参数
+    if (typeof namespace !== 'string') {
+      map = namespace;
+      namespace = '';
+    } else if (namespace.charAt(namespace.length - 1) !== '/') {
+      namespace += '/';
+    }
+    return fn(namespace, map);
+  };
+}
+```
+
+### isValidMap
+
+检测是否是合法的 `map` 参数。
+
+```js
+function isValidMap(map) {
+  return Array.isArray(map) || isObject(map);
+}
+
+// util.js
+function isObject(obj) {
+  return obj !== null && typeof obj === 'object';
+}
+```
+
+### normalizeMap
+
+规范化 `map`。
+
+- `[1, 2, 3]` => `[{ key: 1, val: 1 }, { key: 2, val: 2 }, { key: 3, val: 3 }]`
+
+- `{a: 1, b: 2, c: 3}` => `[{ key: 'a', val: 1 }, { key: 'b', val: 2 }, { key: 'c', val: 3 }]`
+
+```js
+function normalizeMap(map) {
+  if (!isValidMap(map)) {
+    return [];
+  }
+  return Array.isArray(map)
+    ? map.map((key) => ({ key, val: key }))
+    : Object.keys(map).map((key) => ({ key, val: map[key] }));
+}
+```
+
+### mapState
+
+```js
+const mapState = normalizeNamespace((namespace, states) => {
+  const res = {};
+  if (process.env.NODE_ENV !== 'production' && !isValidMap(states)) {
+    console.error(
+      '[vuex] mapState: mapper parameter must be either an Array or an Object'
+    );
+  }
+  normalizeMap(states).forEach(({ key, val }) => {
+    res[key] = function mappedState() {
+      let state = this.$store.state;
+      let getters = this.$store.getters;
+      if (namespace) {
+        const module = getModuleByNamespace(this.$store, 'mapState', namespace);
+        if (!module) {
+          return;
+        }
+        state = module.context.state;
+        getters = module.context.getters;
+      }
+      return typeof val === 'function'
+        ? val.call(this, state, getters)
+        : state[val];
+    };
+    // mark vuex getter for devtools
+    res[key].vuex = true;
+  });
+  return res;
+});
 ```
