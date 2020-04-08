@@ -334,7 +334,7 @@ function installModule(store, rootState, path, module, hot) {
   const namespace = store._modules.getNamespace(path);
   // 如果模块启用了命名空间，则注册到命名空间 map
   if (module.namespaced) {
-    // 非生产环境下注册重复的命名空间时发出警告
+    // 非生产环境下安装命名空间重复的模块时发出警告
     if (
       store._modulesNamespaceMap[namespace] &&
       process.env.NODE_ENV !== 'production'
@@ -463,7 +463,7 @@ function partial(fn, arg) {
 
 ```js
 function resetStore(store, hot) {
-  // 清空 actions，mutations，getters 和命名空间缓存，但保留旧的 state 重新安装模块
+  // 清空 actions，mutations，getters 和模块与命名空间映射 map，但保留旧的 state 重新安装模块
   store._actions = Object.create(null);
   store._mutations = Object.create(null);
   store._wrappedGetters = Object.create(null);
@@ -1105,6 +1105,28 @@ function normalizeMap(map) {
 }
 ```
 
+### getModuleByNamespace
+
+通过命名空间来从模块与命名空间映射 map 中取出指定模块。
+
+```js
+/**
+ * @param {Object} store
+ * @param {String} helper
+ * @param {String} namespace
+ * @return {Object}
+ */
+function getModuleByNamespace(store, helper, namespace) {
+  const module = store._modulesNamespaceMap[namespace];
+  if (process.env.NODE_ENV !== 'production' && !module) {
+    console.error(
+      `[vuex] module namespace not found in ${helper}(): ${namespace}`
+    );
+  }
+  return module;
+}
+```
+
 ### mapState
 
 ```js
@@ -1117,9 +1139,11 @@ const mapState = normalizeNamespace((namespace, states) => {
   }
   normalizeMap(states).forEach(({ key, val }) => {
     res[key] = function mappedState() {
+      // 取挂载到 Vue 实例上的 store 的 state 和 getters
       let state = this.$store.state;
       let getters = this.$store.getters;
       if (namespace) {
+        // 如果传了命名空间参数，则改取对应模块上下文中的 state 和 getters
         const module = getModuleByNamespace(this.$store, 'mapState', namespace);
         if (!module) {
           return;
@@ -1127,6 +1151,7 @@ const mapState = normalizeNamespace((namespace, states) => {
         state = module.context.state;
         getters = module.context.getters;
       }
+      // map 的 value 如果是函数，则以 state 和 getters 为参数调用它，并将其返回值返回
       return typeof val === 'function'
         ? val.call(this, state, getters)
         : state[val];
@@ -1135,5 +1160,130 @@ const mapState = normalizeNamespace((namespace, states) => {
     res[key].vuex = true;
   });
   return res;
+});
+```
+
+### mapGetters
+
+```js
+const mapGetters = normalizeNamespace((namespace, getters) => {
+  const res = {};
+  if (process.env.NODE_ENV !== 'production' && !isValidMap(getters)) {
+    console.error(
+      '[vuex] mapGetters: mapper parameter must be either an Array or an Object'
+    );
+  }
+  normalizeMap(getters).forEach(({ key, val }) => {
+    // 命名空间已由 normalizeNamespace 变换完成
+    val = namespace + val;
+    res[key] = function mappedGetter() {
+      // 模块不存在
+      if (
+        namespace &&
+        !getModuleByNamespace(this.$store, 'mapGetters', namespace)
+      ) {
+        return;
+      }
+      // getters 字段不存在
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        !(val in this.$store.getters)
+      ) {
+        console.error(`[vuex] unknown getter: ${val}`);
+        return;
+      }
+      return this.$store.getters[val];
+    };
+    // mark vuex getter for devtools
+    res[key].vuex = true;
+  });
+  return res;
+});
+```
+
+### mapMutations
+
+```js
+const mapMutations = normalizeNamespace((namespace, mutations) => {
+  const res = {};
+  if (process.env.NODE_ENV !== 'production' && !isValidMap(mutations)) {
+    console.error(
+      '[vuex] mapMutations: mapper parameter must be either an Array or an Object'
+    );
+  }
+  normalizeMap(mutations).forEach(({ key, val }) => {
+    res[key] = function mappedMutation(...args) {
+      // 从 store 获取 commit 方法
+      let commit = this.$store.commit;
+      if (namespace) {
+        // 如果传了命名空间参数，则改取对应模块上下文中的 commit 方法
+        const module = getModuleByNamespace(
+          this.$store,
+          'mapMutations',
+          namespace
+        );
+        if (!module) {
+          return;
+        }
+        commit = module.context.commit;
+      }
+      // map 的 value 如果是函数，则以 commit 和 payload 作为参数调用它
+      // 否则则以 value 和 payload 调用 commit
+      return typeof val === 'function'
+        ? val.apply(this, [commit].concat(args))
+        : commit.apply(this.$store, [val].concat(args));
+    };
+  });
+  return res;
+});
+```
+
+### mapActions
+
+```js
+const mapActions = normalizeNamespace((namespace, actions) => {
+  const res = {};
+  if (process.env.NODE_ENV !== 'production' && !isValidMap(actions)) {
+    console.error(
+      '[vuex] mapActions: mapper parameter must be either an Array or an Object'
+    );
+  }
+  normalizeMap(actions).forEach(({ key, val }) => {
+    res[key] = function mappedAction(...args) {
+      // 从 store 获取 dispatch 方法
+      let dispatch = this.$store.dispatch;
+      if (namespace) {
+        // 如果传了命名空间参数，则改取对应模块上下文中的 dispatch 方法
+        const module = getModuleByNamespace(
+          this.$store,
+          'mapActions',
+          namespace
+        );
+        if (!module) {
+          return;
+        }
+        dispatch = module.context.dispatch;
+      }
+      // map 的 value 如果是函数，则以 dispatch 和 payload 作为参数调用它
+      // 否则则以 value 和 payload 调用 dispatch，并将一个 promise 返回值返回
+      return typeof val === 'function'
+        ? val.apply(this, [dispatch].concat(args))
+        : dispatch.apply(this.$store, [val].concat(args));
+    };
+  });
+  return res;
+});
+```
+
+### createNamespacedHelpers
+
+创建基于命名空间的辅助函数，其返回一个包含 `mapState`、`mapGetters`、`mapActions` 和 `mapMutations` 的对象，且它们都已经绑定在了给定的命名空间上。
+
+```js
+const createNamespacedHelpers = (namespace) => ({
+  mapState: mapState.bind(null, namespace),
+  mapGetters: mapGetters.bind(null, namespace),
+  mapMutations: mapMutations.bind(null, namespace),
+  mapActions: mapActions.bind(null, namespace)
 });
 ```
